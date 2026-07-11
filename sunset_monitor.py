@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # sunsetbot 火烧云监控 + 全量日报，通过环境变量配置，适配 GitHub Actions
 import json, os, re, sys, urllib.parse, urllib.request
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta
 
 # --- 配置来自环境变量 ---
 CITIES = os.getenv("SUNSET_CITIES", "长沙,衡阳").split(",")
@@ -13,8 +13,15 @@ SERVERCHAN_SENDKEY = os.getenv("SERVERCHAN_SENDKEY", "")
 PUSHPLUS_TOKEN = os.getenv("PUSHPLUS_TOKEN", "")
 WECOM_WEBHOOK = os.getenv("WECOM_WEBHOOK", "")
 TIMEOUT = int(os.getenv("TIMEOUT_SEC", "20"))
+TZ_CST = timezone(timedelta(hours=8))
 
 API_BASE = "https://sunsetbot.top/?intend=select_city&query_city={city}&event={event}&model={model}"
+
+# --- 模型更新时间表（北京时间） ---
+MODEL_SCHEDULE = {
+    "GFS": ["07:30 (大更新)", "13:30 (小更新)", "19:30 (大更新)", "01:30 (小更新)"],
+    "EC":  ["04:00", "10:00", "16:00", "22:00"],
+}
 
 def parse_float(s):
     if not s: return None
@@ -27,6 +34,26 @@ def level_label(q):
         if q < th: return lb
     return "世纪大烧"
 
+def parse_model_ts(times_str):
+    """解析 display_times_str 如 '2026071100z' → datetime (UTC)"""
+    try:
+        s = times_str.strip().rstrip("z").rstrip("Z")
+        return datetime.strptime(s, "%Y%m%d%H").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+def fmt_elapsed(times_str):
+    """返回距模型时次的耗时描述，如 '2h ago'"""
+    ts = parse_model_ts(times_str)
+    if not ts: return ""
+    delta = datetime.now(timezone.utc) - ts
+    hours = int(delta.total_seconds() / 3600)
+    mins = int((delta.total_seconds() % 3600) / 60)
+    if hours >= 1:
+        return f"（{hours}h{mins}m ago）"
+    else:
+        return f"（{mins}m ago）"
+
 def query_city(city, event, model):
     url = API_BASE.format(city=urllib.parse.quote(city), event=event, model=model)
     try:
@@ -35,7 +62,10 @@ def query_city(city, event, model):
             data = json.loads(resp.read().decode("utf-8"))
         if data.get("status") != "ok": return None
         return {"quality": parse_float(data.get("tb_quality")), "aod": parse_float(data.get("tb_aod")),
-                "time": data.get("tb_event_time"), "raw": data}
+                "time": data.get("tb_event_time"),
+                "model_ts": data.get("display_times_str", ""),
+                "model_ts_name": data.get("display_times_name", ""),
+                "raw": data}
     except Exception as e:
         print(f"[WARN] {city}/{model} failed: {e}", file=sys.stderr)
         return None
@@ -48,7 +78,6 @@ def query_all(event):
             rd = query_city(city, event, m)
             if rd: md[m] = rd
         if not md: out[city] = None; continue
-        # 日报综合值取 max
         q = max(rv["quality"] for rv in md.values() if rv["quality"] is not None)
         aod = max((rv["aod"] for rv in md.values() if rv["aod"] is not None), default=None)
         t = next((rv["time"] for rv in md.values() if rv["time"]), None)
@@ -74,6 +103,26 @@ def push(title, content):
         return http_post(WECOM_WEBHOOK, {"msgtype": "markdown", "markdown": {"content": content}}, is_json=True)
     return "no push channel configured"
 
+# --- 公用尾部：模型更新时差 + 更新时间表 ---
+def build_footer(model_ts_map):
+    """model_ts_map: {model: times_str}"""
+    lines = [""]
+    for m in MODELS:
+        ts = model_ts_map.get(m, "")
+        if ts:
+            lines.append(f"⏱ {m} 数据时次 `{ts}` {fmt_elapsed(ts)}")
+        else:
+            lines.append(f"⏱ {m} 数据时次：查询失败")
+    lines.append("")
+    lines.append("---")
+    lines.append("📡 **模型更新时间表（北京时间）**")
+    for m in MODELS:
+        if m in MODEL_SCHEDULE:
+            lines.append(f"  **{m}**：{' · '.join(MODEL_SCHEDULE[m])}")
+    lines.append("")
+    lines.append("🔗 https://sunsetbot.top/")
+    return "\n".join(lines)
+
 # --- digest mode ---
 EVENT_LABELS = {"set_1":"🌅 今日日落","set_2":"🌇 明日日落","rise_1":"🌄 今日日出","rise_2":"🌅 明日日出"}
 
@@ -81,6 +130,7 @@ def run_digest():
     today = date.today().strftime("%Y-%m-%d")
     events = os.getenv("DIGEST_EVENTS", "set_1,set_2").split(",")
     sections = []
+    model_ts_map = {}
     for ev in events:
         data = query_all(ev)
         rows = []
@@ -92,11 +142,16 @@ def run_digest():
             q_s = f"{r['quality']:.2f}"; aod_s = f"{r['aod']:.2f}" if isinstance(r['aod'],(int,float)) else "-"
             t_s = (r['time'].split(" ")[-1][:5]) if r['time'] else "-"
             rows.append(f"| {city} | {gfs_s} | {ec_s} | {q_s} | {aod_s} | {t_s} | {level_label(r['quality'])} |")
+            # 收集模型时次
+            for m in MODELS:
+                if m in r["models"] and m not in model_ts_map:
+                    model_ts_map[m] = r["models"][m].get("model_ts", "")
         table = (f"### {EVENT_LABELS.get(ev,ev)}\n\n"
                  "| 城市 | GFS | EC | 综合 | 气溶胶 | 日落 | 等级 |\n"
                  "|------|-----|-----|------|--------|------|------|\n" + "\n".join(rows))
         sections.append(table)
-    content = f"📊 **火烧云全量数据 · {today}**\n\n> 每日 10:00 / 15:00 定时推送（数据留痕，不受阈值限制）\n\n" + "\n\n".join(sections) + "\n\n🔗 https://sunsetbot.top/"
+    content = f"📊 **火烧云全量数据 · {today}**\n\n> 每日 10:00 / 15:00 定时推送（数据留痕，不受阈值限制）\n\n" + "\n\n".join(sections)
+    content += build_footer(model_ts_map)
     title = f"📊 火烧云日报 · {today}"
     print(content)
     resp = push(title, content)
@@ -105,13 +160,16 @@ def run_digest():
 # --- monitor mode（双模型独立展示） ---
 def run_monitor():
     today = date.today().strftime("%Y-%m-%d")
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    results = {}; any_due = False
+    ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    results = {}; any_due = False; model_ts_map = {}
     for city in CITIES:
         md = {}
         for m in MODELS:
             rd = query_city(city, EVENT, m)
-            if rd: md[m] = rd
+            if rd:
+                md[m] = rd
+                if m not in model_ts_map:
+                    model_ts_map[m] = rd.get("model_ts", "")
         if not md: continue
         results[city] = {"models": md}
         for m, rd in md.items():
@@ -131,15 +189,15 @@ def run_monitor():
                     lines.append(f"  {prefix} {m}：{d['quality']:.2f} {lbl}｜气溶胶 {aod_s}")
                 else:
                     lines.append(f"  ❌ {m}：查询失败")
-        lines.append(""); lines.append("🔗 https://sunsetbot.top/")
+        lines.append(build_footer(model_ts_map))
         content = "\n".join(lines)
         print(content)
         resp = push(title, content)
         print(f"[PUSH] {title} -> {resp[:200]}")
     else:
-        print(f"[{ts}] OK — 无达标城市")
+        print(f"[{ts_str}] OK — 无达标城市")
     # 写日志
-    log_entry = {"ts": ts, "alert": any_due}
+    log_entry = {"ts": ts_str, "alert": any_due}
     for city, r in results.items():
         log_entry[city] = {}
         for m in MODELS:
@@ -150,12 +208,15 @@ def run_monitor():
 # --- force mode ---
 def run_force():
     today = date.today().strftime("%Y-%m-%d")
-    results = {}; any_due = False
+    results = {}; any_due = False; model_ts_map = {}
     for city in CITIES:
         md = {}
         for m in MODELS:
             rd = query_city(city, EVENT, m)
-            if rd: md[m] = rd
+            if rd:
+                md[m] = rd
+                if m not in model_ts_map:
+                    model_ts_map[m] = rd.get("model_ts", "")
         if not md: continue
         results[city] = {"models": md}
         for m, rd in md.items():
@@ -174,7 +235,7 @@ def run_force():
                 lines.append(f"  {prefix} {m}：{d['quality']:.2f} {lbl}｜气溶胶 {aod_s}")
             else:
                 lines.append(f"  ❌ {m}：查询失败")
-    lines.append(""); lines.append("🔗 https://sunsetbot.top/")
+    lines.append(build_footer(model_ts_map))
     content = "\n".join(lines)
     print(content)
     resp = push(title, content)
