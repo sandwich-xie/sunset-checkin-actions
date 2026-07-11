@@ -184,7 +184,7 @@ def run_digest():
     resp = push(title, content)
     print(f"[PUSH] {title} -> {resp[:200]}")
 
-# --- monitor mode（双模型独立展示，表格排版） ---
+# --- monitor mode（每次必推） ---
 def run_monitor():
     today = date.today().strftime("%Y-%m-%d")
     ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -203,17 +203,14 @@ def run_monitor():
             due = rd["quality"] >= THRESHOLD
             if due: any_due = True
             results[city][m] = {"quality": rd["quality"], "aod": rd["aod"], "due": due}
-    if any_due:
-        title = f"🔥 火烧云提醒 · {today}"
-        lines = [f"📍 **{today} 晚霞火烧云预报**", "", f"阈值：鲜艳度 ≥ {THRESHOLD}（{level_label(THRESHOLD)}）", ""]
-        lines.append(build_city_table(results))
-        lines.append(build_footer(model_ts_map))
-        content = "\n".join(lines)
-        print(content)
-        resp = push(title, content)
-        print(f"[PUSH] {title} -> {resp[:200]}")
-    else:
-        print(f"[{ts_str}] OK — 无达标城市")
+    title = f"📡 火烧云实时数据 · {today}"
+    lines = [f"📍 **{today} 晚霞火烧云实时查询**", "", f"阈值：鲜艳度 ≥ {THRESHOLD}（{level_label(THRESHOLD)}）", ""]
+    lines.append(build_city_table(results))
+    lines.append(build_footer(model_ts_map))
+    content = "\n".join(lines)
+    print(content)
+    resp = push(title, content)
+    print(f"[PUSH] {title} -> {resp[:200]}")
     # 写日志
     log_entry = {"ts": ts_str, "alert": any_due}
     for city, r in results.items():
