@@ -123,6 +123,34 @@ def build_footer(model_ts_map):
     lines.append("🔗 https://sunsetbot.top/")
     return "\n".join(lines)
 
+# --- 公用：构建城市数据表 ---
+def build_city_table(results):
+    """results: {city: {model: {quality, aod, due}}} → Markdown 表格"""
+    lines = []
+    lines.append("| 城市 | 模型 | 鲜艳度 | 等级 | 气溶胶 | 状态 |")
+    lines.append("|------|------|--------|------|--------|------|")
+    for city in CITIES:
+        r = results.get(city)
+        if not r:
+            lines.append(f"| {city} | — | — | — | — | 查询失败 |")
+            continue
+        first = True
+        for m in MODELS:
+            if m in r:
+                d = r[m]
+                q_s = f"{d['quality']:.3f}"
+                lbl = level_label(d["quality"])
+                aod_s = f"{d['aod']:.2f}" if isinstance(d['aod'],(int,float)) else "—"
+                status = "🔥 达标" if d["due"] else "—"
+                city_col = f"**{city}**" if first else ""
+                lines.append(f"| {city_col} | {m} | {q_s} | {lbl} | {aod_s} | {status} |")
+                first = False
+            else:
+                city_col = f"**{city}**" if first else ""
+                lines.append(f"| {city_col} | {m} | — | — | — | 查询失败 |")
+                first = False
+    return "\n".join(lines)
+
 # --- digest mode ---
 EVENT_LABELS = {"set_1":"🌅 今日日落","set_2":"🌇 明日日落","rise_1":"🌄 今日日出","rise_2":"🌅 明日日出"}
 
@@ -142,7 +170,6 @@ def run_digest():
             q_s = f"{r['quality']:.2f}"; aod_s = f"{r['aod']:.2f}" if isinstance(r['aod'],(int,float)) else "-"
             t_s = (r['time'].split(" ")[-1][:5]) if r['time'] else "-"
             rows.append(f"| {city} | {gfs_s} | {ec_s} | {q_s} | {aod_s} | {t_s} | {level_label(r['quality'])} |")
-            # 收集模型时次
             for m in MODELS:
                 if m in r["models"] and m not in model_ts_map:
                     model_ts_map[m] = r["models"][m].get("model_ts", "")
@@ -157,7 +184,7 @@ def run_digest():
     resp = push(title, content)
     print(f"[PUSH] {title} -> {resp[:200]}")
 
-# --- monitor mode（双模型独立展示） ---
+# --- monitor mode（双模型独立展示，表格排版） ---
 def run_monitor():
     today = date.today().strftime("%Y-%m-%d")
     ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -171,7 +198,7 @@ def run_monitor():
                 if m not in model_ts_map:
                     model_ts_map[m] = rd.get("model_ts", "")
         if not md: continue
-        results[city] = {"models": md}
+        results[city] = {}
         for m, rd in md.items():
             due = rd["quality"] >= THRESHOLD
             if due: any_due = True
@@ -179,16 +206,7 @@ def run_monitor():
     if any_due:
         title = f"🔥 火烧云提醒 · {today}"
         lines = [f"📍 **{today} 晚霞火烧云预报**", "", f"阈值：鲜艳度 ≥ {THRESHOLD}（{level_label(THRESHOLD)}）", ""]
-        for city, r in results.items():
-            lines.append(f"**{city}**")
-            for m in MODELS:
-                if m in r:
-                    d = r[m]; lbl = level_label(d["quality"])
-                    prefix = "🔥" if d["due"] else "  "
-                    aod_s = f"{d['aod']:.2f}" if isinstance(d['aod'],(int,float)) else "-"
-                    lines.append(f"  {prefix} {m}：{d['quality']:.2f} {lbl}｜气溶胶 {aod_s}")
-                else:
-                    lines.append(f"  ❌ {m}：查询失败")
+        lines.append(build_city_table(results))
         lines.append(build_footer(model_ts_map))
         content = "\n".join(lines)
         print(content)
@@ -218,23 +236,14 @@ def run_force():
                 if m not in model_ts_map:
                     model_ts_map[m] = rd.get("model_ts", "")
         if not md: continue
-        results[city] = {"models": md}
+        results[city] = {}
         for m, rd in md.items():
             due = rd["quality"] >= THRESHOLD
             if due: any_due = True
             results[city][m] = {"quality": rd["quality"], "aod": rd["aod"], "due": due}
     title = f"📡 火烧云实时数据 · {today}"
     lines = [f"📍 **{today} 晚霞火烧云实时查询**", "", f"阈值：鲜艳度 ≥ {THRESHOLD}（{level_label(THRESHOLD)}）", ""]
-    for city, r in results.items():
-        lines.append(f"**{city}**")
-        for m in MODELS:
-            if m in r:
-                d = r[m]; lbl = level_label(d["quality"])
-                prefix = "🔥" if d["due"] else "  "
-                aod_s = f"{d['aod']:.2f}" if isinstance(d['aod'],(int,float)) else "-"
-                lines.append(f"  {prefix} {m}：{d['quality']:.2f} {lbl}｜气溶胶 {aod_s}")
-            else:
-                lines.append(f"  ❌ {m}：查询失败")
+    lines.append(build_city_table(results))
     lines.append(build_footer(model_ts_map))
     content = "\n".join(lines)
     print(content)
