@@ -247,27 +247,10 @@ def run_force():
     resp = push(title, content)
     print(f"[PUSH] {title} -> {resp[:200]}")
 
-# --- 时间窗口检查（cron-job 每 5 分钟触发，仅在指定时间窗口内执行） ---
-VALID_HOURS_CST = [9, 11, 14, 17, 21]  # 允许执行的北京时间小时
-
-def in_valid_window():
-    """判断当前 CST 时间是否在允许的执行窗口内（±2.5 分钟）"""
-    now = datetime.now(TZ_CST)
-    if now.hour not in VALID_HOURS_CST:
-        return False
-    # 允许在整点前后 2.5 分钟内（因为 cron-job 每 5 分钟触发一次，整点那次会命中）
-    if now.minute <= 2:
-        return True
-    return False
-
 if __name__ == "__main__":
     if "--digest" in sys.argv:
         run_digest()
     elif "--force" in sys.argv:
         run_force()
     else:
-        if in_valid_window():
-            run_monitor()
-        else:
-            now = datetime.now(TZ_CST).strftime("%H:%M")
-            print(f"[SKIP] {now} CST — 不在执行窗口内（允许时间: {VALID_HOURS_CST} 整点）")
+        run_monitor()
