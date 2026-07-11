@@ -6,7 +6,6 @@ from datetime import datetime, date
 # --- 配置来自环境变量 ---
 CITIES = os.getenv("SUNSET_CITIES", "长沙,衡阳").split(",")
 THRESHOLD = float(os.getenv("SUNSET_THRESHOLD", "0.4"))
-REALERT_DELTA = float(os.getenv("SUNSET_REALERT_DELTA", "0.3"))
 EVENT = os.getenv("SUNSET_EVENT", "set_1")
 MODELS = os.getenv("SUNSET_MODELS", "GFS").split(",")
 PUSH_CHANNEL = os.getenv("PUSH_CHANNEL", "serverchan")
@@ -74,16 +73,6 @@ def push(title, content):
         return http_post(WECOM_WEBHOOK, {"msgtype": "markdown", "markdown": {"content": content}}, is_json=True)
     return "no push channel configured"
 
-def load_state():
-    p = os.path.join(os.path.dirname(__file__), ".sunset_state.json")
-    if os.path.exists(p):
-        with open(p) as f: return json.load(f)
-    return {}
-
-def save_state(st):
-    with open(os.path.join(os.path.dirname(__file__), ".sunset_state.json"), "w") as f:
-        json.dump(st, f, ensure_ascii=False, indent=2)
-
 # --- digest mode ---
 EVENT_LABELS = {"set_1":"🌅 今日日落","set_2":"🌇 明日日落","rise_1":"🌄 今日日出","rise_2":"🌅 明日日出"}
 
@@ -116,7 +105,6 @@ def run_digest():
 def run_monitor():
     today = date.today().strftime("%Y-%m-%d")
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    state = load_state()
     results = {}; due = []
     for city in CITIES:
         md = {}
@@ -128,18 +116,8 @@ def run_monitor():
         aod = max((rv["aod"] for rv in md.values() if rv["aod"] is not None), default=None)
         t = next((rv["time"] for rv in md.values() if rv["time"]), None)
         results[city] = {"quality": q, "aod": aod, "time": t, "models": md}
-        key = f"{city}|{EVENT}"
-        st = state.get(key, {})
-        notified = (st.get("date") == today) and st.get("notified", False)
-        nq = st.get("notified_quality", 0.0)
-        is_due = False
         if q >= THRESHOLD:
-            if not notified: is_due = True
-            elif REALERT_DELTA > 0 and (q - nq) >= REALERT_DELTA: is_due = True
-        if is_due: due.append(city)
-        state[key] = {"date": today, "notified": notified or is_due,
-                       "notified_quality": nq if (notified and not is_due) else q, "last_quality": q}
-    save_state(state)
+            due.append(city)
     if due:
         top = max(due, key=lambda c: results[c]["quality"])
         title = f"🔥 火烧云提醒 · {top} {results[top]['quality']:.2f}"
