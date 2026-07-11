@@ -7,7 +7,7 @@ from datetime import datetime, date
 CITIES = os.getenv("SUNSET_CITIES", "长沙,衡阳").split(",")
 THRESHOLD = float(os.getenv("SUNSET_THRESHOLD", "0.33"))
 EVENT = os.getenv("SUNSET_EVENT", "set_1")
-MODELS = os.getenv("SUNSET_MODELS", "GFS").split(",")
+MODELS = os.getenv("SUNSET_MODELS", "GFS,EC").split(",")
 PUSH_CHANNEL = os.getenv("PUSH_CHANNEL", "serverchan")
 SERVERCHAN_SENDKEY = os.getenv("SERVERCHAN_SENDKEY", "")
 PUSHPLUS_TOKEN = os.getenv("PUSHPLUS_TOKEN", "")
@@ -23,7 +23,7 @@ def parse_float(s):
 
 def level_label(q):
     if q is None: return "未知"
-    for th, lb in [(0.05,"微微烧"),(0.2,"小烧"),(0.4,"中小烧"),(0.6,"中等烧"),(0.8,"中大烧"),(1.0,"大烧(不完美)"),(1.5,"典型大烧"),(2.0,"优质大烧")]:
+    for th, lb in [(0.05,"微微烧"),(0.2,"小烧"),(0.33,"中小烧"),(0.4,"中小烧偏上"),(0.6,"中等烧"),(0.8,"中大烧"),(1.0,"大烧(不完美)"),(1.5,"典型大烧"),(2.0,"优质大烧")]:
         if q < th: return lb
     return "世纪大烧"
 
@@ -48,6 +48,7 @@ def query_all(event):
             rd = query_city(city, event, m)
             if rd: md[m] = rd
         if not md: out[city] = None; continue
+        # 日报综合值取 max
         q = max(rv["quality"] for rv in md.values() if rv["quality"] is not None)
         aod = max((rv["aod"] for rv in md.values() if rv["aod"] is not None), default=None)
         t = next((rv["time"] for rv in md.values() if rv["time"]), None)
@@ -101,32 +102,35 @@ def run_digest():
     resp = push(title, content)
     print(f"[PUSH] {title} -> {resp[:200]}")
 
-# --- monitor mode ---
+# --- monitor mode（双模型独立展示） ---
 def run_monitor():
     today = date.today().strftime("%Y-%m-%d")
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    results = {}; due = []
+    results = {}; any_due = False
     for city in CITIES:
         md = {}
         for m in MODELS:
             rd = query_city(city, EVENT, m)
             if rd: md[m] = rd
         if not md: continue
-        q = max(rv["quality"] for rv in md.values() if rv["quality"] is not None)
-        aod = max((rv["aod"] for rv in md.values() if rv["aod"] is not None), default=None)
-        t = next((rv["time"] for rv in md.values() if rv["time"]), None)
-        results[city] = {"quality": q, "aod": aod, "time": t, "models": md}
-        if q >= THRESHOLD:
-            due.append(city)
-    if due:
-        top = max(due, key=lambda c: results[c]["quality"])
-        title = f"🔥 火烧云提醒 · {top} {results[top]['quality']:.2f}"
+        results[city] = {"models": md}
+        for m, rd in md.items():
+            due = rd["quality"] >= THRESHOLD
+            if due: any_due = True
+            results[city][m] = {"quality": rd["quality"], "aod": rd["aod"], "due": due}
+    if any_due:
+        title = f"🔥 火烧云提醒 · {today}"
         lines = [f"📍 **{today} 晚霞火烧云预报**", "", f"阈值：鲜艳度 ≥ {THRESHOLD}（{level_label(THRESHOLD)}）", ""]
         for city, r in results.items():
-            lbl = level_label(r["quality"])
-            md_s = " / ".join(f"{m} {rv['quality']:.2f}" for m, rv in r["models"].items())
-            prefix = "🔥" if city in due else "🌆"
-            lines.append(f"{prefix} **{city}** {lbl}：{r['quality']:.2f}（{md_s}）｜气溶胶 {r['aod']:.2f}｜日落 {r['time']}")
+            lines.append(f"**{city}**")
+            for m in MODELS:
+                if m in r:
+                    d = r[m]; lbl = level_label(d["quality"])
+                    prefix = "🔥" if d["due"] else "  "
+                    aod_s = f"{d['aod']:.2f}" if isinstance(d['aod'],(int,float)) else "-"
+                    lines.append(f"  {prefix} {m}：{d['quality']:.2f} {lbl}｜气溶胶 {aod_s}")
+                else:
+                    lines.append(f"  ❌ {m}：查询失败")
         lines.append(""); lines.append("🔗 https://sunsetbot.top/")
         content = "\n".join(lines)
         print(content)
@@ -135,40 +139,51 @@ def run_monitor():
     else:
         print(f"[{ts}] OK — 无达标城市")
     # 写日志
+    log_entry = {"ts": ts, "alert": any_due}
+    for city, r in results.items():
+        log_entry[city] = {}
+        for m in MODELS:
+            if m in r: log_entry[city][m] = round(r[m]["quality"], 3)
     with open(os.path.join(os.path.dirname(__file__), "sunset_monitor.log"), "a") as f:
-        f.write(json.dumps({"ts": ts, "alert": bool(due), "qualities": {c:round(r["quality"],3) for c,r in results.items()}}, ensure_ascii=False)+"\n")
+        f.write(json.dumps(log_entry, ensure_ascii=False)+"\n")
+
+# --- force mode ---
+def run_force():
+    today = date.today().strftime("%Y-%m-%d")
+    results = {}; any_due = False
+    for city in CITIES:
+        md = {}
+        for m in MODELS:
+            rd = query_city(city, EVENT, m)
+            if rd: md[m] = rd
+        if not md: continue
+        results[city] = {"models": md}
+        for m, rd in md.items():
+            due = rd["quality"] >= THRESHOLD
+            if due: any_due = True
+            results[city][m] = {"quality": rd["quality"], "aod": rd["aod"], "due": due}
+    title = f"📡 火烧云实时数据 · {today}"
+    lines = [f"📍 **{today} 晚霞火烧云实时查询**", "", f"阈值：鲜艳度 ≥ {THRESHOLD}（{level_label(THRESHOLD)}）", ""]
+    for city, r in results.items():
+        lines.append(f"**{city}**")
+        for m in MODELS:
+            if m in r:
+                d = r[m]; lbl = level_label(d["quality"])
+                prefix = "🔥" if d["due"] else "  "
+                aod_s = f"{d['aod']:.2f}" if isinstance(d['aod'],(int,float)) else "-"
+                lines.append(f"  {prefix} {m}：{d['quality']:.2f} {lbl}｜气溶胶 {aod_s}")
+            else:
+                lines.append(f"  ❌ {m}：查询失败")
+    lines.append(""); lines.append("🔗 https://sunsetbot.top/")
+    content = "\n".join(lines)
+    print(content)
+    resp = push(title, content)
+    print(f"[PUSH] {title} -> {resp[:200]}")
 
 if __name__ == "__main__":
     if "--digest" in sys.argv:
         run_digest()
+    elif "--force" in sys.argv:
+        run_force()
     else:
-        if "--force" in sys.argv:
-            # 强制推送模式：不论是否达标都推
-            today = date.today().strftime("%Y-%m-%d")
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            results = {}; due = []
-            for city in CITIES:
-                md = {}
-                for m in MODELS:
-                    rd = query_city(city, EVENT, m)
-                    if rd: md[m] = rd
-                if not md: continue
-                q = max(rv["quality"] for rv in md.values() if rv["quality"] is not None)
-                aod = max((rv["aod"] for rv in md.values() if rv["aod"] is not None), default=None)
-                t = next((rv["time"] for rv in md.values() if rv["time"]), None)
-                results[city] = {"quality": q, "aod": aod, "time": t, "models": md}
-                if q >= THRESHOLD: due.append(city)
-            title = f"📡 火烧云实时数据 · {today}"
-            lines = [f"📍 **{today} 晚霞火烧云实时查询**", "", f"阈值：鲜艳度 ≥ {THRESHOLD}（{level_label(THRESHOLD)}）", ""]
-            for city, r in results.items():
-                lbl = level_label(r["quality"])
-                md_s = " / ".join(f"{m} {rv['quality']:.2f}" for m, rv in r["models"].items())
-                prefix = "🔥" if city in due else "🌆"
-                lines.append(f"{prefix} **{city}** {lbl}：{r['quality']:.2f}（{md_s}）｜气溶胶 {r['aod']:.2f}｜日落 {r['time']}")
-            lines.append(""); lines.append("🔗 https://sunsetbot.top/")
-            content = "\n".join(lines)
-            print(content)
-            resp = push(title, content)
-            print(f"[PUSH] {title} -> {resp[:200]}")
-        else:
-            run_monitor()
+        run_monitor()

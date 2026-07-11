@@ -2,7 +2,13 @@ name: 火烧云监控
 
 on:
   schedule:
-    - cron: "0 2,3,4,5,6,7,8,9,10,11 * * *"   # 10:00-19:00 CST 整点 = 02:00-11:00 UTC
+    # 对齐 GFS + EC 模型更新时间（均为北京时间）
+    # GFS 大更新 07:30-08:30 → 09:00 触发
+    # EC 更新 10:00     → 11:00 触发
+    # GFS 小更新 13:30  → 14:00 触发
+    # EC 更新 16:00     → 17:00 触发
+    # GFS 大更新 19:30  → 21:00 触发（日落前最后确认）
+    - cron: "0 1,3,6,9,13 * * *"   # CST 09:00/11:00/14:00/17:00/21:00 = UTC 01:00/03:00/06:00/09:00/13:00
   workflow_dispatch:
 
 jobs:
@@ -18,5 +24,6 @@ jobs:
         env:
           SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
           SUNSET_CITIES: ${{ vars.SUNSET_CITIES || '长沙,衡阳' }}
-          SUNSET_THRESHOLD: ${{ vars.SUNSET_THRESHOLD || '0.4' }}
+          SUNSET_THRESHOLD: ${{ vars.SUNSET_THRESHOLD || '0.33' }}
+          SUNSET_MODELS: ${{ vars.SUNSET_MODELS || 'GFS,EC' }}
         run: python sunset_monitor.py
