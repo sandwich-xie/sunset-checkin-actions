@@ -5,7 +5,7 @@ from datetime import datetime, date
 
 # --- 配置来自环境变量 ---
 CITIES = os.getenv("SUNSET_CITIES", "长沙,衡阳").split(",")
-THRESHOLD = float(os.getenv("SUNSET_THRESHOLD", "0.4"))
+THRESHOLD = float(os.getenv("SUNSET_THRESHOLD", "0.33"))
 EVENT = os.getenv("SUNSET_EVENT", "set_1")
 MODELS = os.getenv("SUNSET_MODELS", "GFS").split(",")
 PUSH_CHANNEL = os.getenv("PUSH_CHANNEL", "serverchan")
@@ -142,4 +142,33 @@ if __name__ == "__main__":
     if "--digest" in sys.argv:
         run_digest()
     else:
-        run_monitor()
+        if "--force" in sys.argv:
+            # 强制推送模式：不论是否达标都推
+            today = date.today().strftime("%Y-%m-%d")
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            results = {}; due = []
+            for city in CITIES:
+                md = {}
+                for m in MODELS:
+                    rd = query_city(city, EVENT, m)
+                    if rd: md[m] = rd
+                if not md: continue
+                q = max(rv["quality"] for rv in md.values() if rv["quality"] is not None)
+                aod = max((rv["aod"] for rv in md.values() if rv["aod"] is not None), default=None)
+                t = next((rv["time"] for rv in md.values() if rv["time"]), None)
+                results[city] = {"quality": q, "aod": aod, "time": t, "models": md}
+                if q >= THRESHOLD: due.append(city)
+            title = f"📡 火烧云实时数据 · {today}"
+            lines = [f"📍 **{today} 晚霞火烧云实时查询**", "", f"阈值：鲜艳度 ≥ {THRESHOLD}（{level_label(THRESHOLD)}）", ""]
+            for city, r in results.items():
+                lbl = level_label(r["quality"])
+                md_s = " / ".join(f"{m} {rv['quality']:.2f}" for m, rv in r["models"].items())
+                prefix = "🔥" if city in due else "🌆"
+                lines.append(f"{prefix} **{city}** {lbl}：{r['quality']:.2f}（{md_s}）｜气溶胶 {r['aod']:.2f}｜日落 {r['time']}")
+            lines.append(""); lines.append("🔗 https://sunsetbot.top/")
+            content = "\n".join(lines)
+            print(content)
+            resp = push(title, content)
+            print(f"[PUSH] {title} -> {resp[:200]}")
+        else:
+            run_monitor()
