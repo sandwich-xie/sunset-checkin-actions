@@ -1,0 +1,27 @@
+name: 每日签到
+
+on:
+  schedule:
+    - cron: "30 0 * * *"         # 8:30 CST = 00:30 UTC
+  workflow_dispatch:
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 安装依赖
+        run: pip install genshin
+      - name: 执行签到
+        env:
+          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+          MIYO_ENABLED: ${{ vars.MIYO_ENABLED || 'true' }}
+          MIYO_COOKIE: ${{ secrets.MIYO_COOKIE }}
+          MIYO_GAMES: ${{ vars.MIYO_GAMES || '原神' }}
+          KURO_ENABLED: ${{ vars.KURO_ENABLED || 'false' }}
+          KURO_TOKEN: ${{ secrets.KURO_TOKEN }}
+        run: python daily_checkin.py
