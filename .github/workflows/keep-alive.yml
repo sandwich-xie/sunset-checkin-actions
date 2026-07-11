@@ -1,0 +1,21 @@
+name: Keep Alive (防止休眠)
+
+on:
+  schedule:
+    - cron: '0 0 1 * *'  # UTC 每月1号 00:00 (CST 08:00)
+  workflow_dispatch:
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+      - name: 空提交保持活跃
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keep-alive $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push origin main
