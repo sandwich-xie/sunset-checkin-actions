@@ -21,4 +21,4 @@ jobs:
           SUNSET_CITIES: ${{ vars.SUNSET_CITIES || '长沙,衡阳' }}
           SUNSET_THRESHOLD: ${{ vars.SUNSET_THRESHOLD || '0.33' }}
           SUNSET_MODELS: ${{ vars.SUNSET_MODELS || 'GFS,EC' }}
-        run: python sunset_monitor.py
+        run: python scripts/sunset_monitor.py

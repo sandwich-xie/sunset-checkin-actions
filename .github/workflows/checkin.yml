@@ -24,4 +24,4 @@ jobs:
           MIYO_GAMES: ${{ vars.MIYO_GAMES || '原神' }}
           KURO_ENABLED: ${{ vars.KURO_ENABLED || 'false' }}
           KURO_TOKEN: ${{ secrets.KURO_TOKEN }}
-        run: python daily_checkin.py
+        run: python scripts/daily_checkin.py
