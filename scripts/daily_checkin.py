@@ -67,7 +67,6 @@ else:
 # --- 库街区（鸣潮） ---
 if KURO_ENABLED and KURO_TOKEN:
     try:
-        # 请求头对齐库街区 v2.2.0+ API
         headers = {
             "token": KURO_TOKEN,
             "source": "android",
@@ -96,17 +95,35 @@ if KURO_ENABLED and KURO_TOKEN:
             with urllib.request.urlopen(req2, timeout=TIMEOUT) as resp:
                 roles = json.loads(resp.read())
             rl = (roles.get("data") or {}).get("defaultRoleList") or []
-            role = next((r for r in rl if r.get("gameId") == 3), None)  # 鸣潮 gameId=3
+            role = next((r for r in rl if r.get("gameId") == 3), None)
             if not role:
                 results.append(("库街区", "未绑定鸣潮角色"))
             else:
-                # Step 3: 鸣潮签到 V2（gameId=3, 固定 serverId）
                 MC_SERVER_ID = "76402e5b20be2c39f095a152090afddc"
+                rid = str(role.get("roleId", 0))
+
+                # Step 3: 获取签到物品映射表（goodsId → goodsName）
+                goods_map = {}
+                try:
+                    info_data = urllib.parse.urlencode({
+                        "gameId": "3", "serverId": MC_SERVER_ID,
+                        "roleId": rid, "userId": str(uid),
+                    }).encode()
+                    req_info = urllib.request.Request("https://api.kurobbs.com/encourage/signIn/initSignInV2",
+                                                      data=info_data, headers=headers, method="POST")
+                    with urllib.request.urlopen(req_info, timeout=TIMEOUT) as resp:
+                        info_js = json.loads(resp.read())
+                    for c in (info_js.get("data") or {}).get("signInGoodsConfigs", []):
+                        gid = c.get("goodsId")
+                        if gid and gid not in goods_map:
+                            goods_map[str(gid)] = c.get("goodsName", "")
+                except Exception:
+                    pass  # 映射表获取失败不影响签到
+
+                # Step 4: 鸣潮签到 V2
                 sd = urllib.parse.urlencode({
-                    "gameId": "3",
-                    "serverId": MC_SERVER_ID,
-                    "roleId": str(role.get("roleId", 0)),
-                    "userId": str(uid),
+                    "gameId": "3", "serverId": MC_SERVER_ID,
+                    "roleId": rid, "userId": str(uid),
                     "reqMonth": datetime.now().strftime("%m"),
                 }).encode()
                 req3 = urllib.request.Request("https://api.kurobbs.com/encourage/signIn/v2",
@@ -114,17 +131,19 @@ if KURO_ENABLED and KURO_TOKEN:
                 with urllib.request.urlopen(req3, timeout=TIMEOUT) as resp:
                     js = json.loads(resp.read())
                 if js.get("success"):
-                    goods = (js.get("data") or {}).get("todayList", [{}])[0]
-                    gid = goods.get("goodsId", "")
-                    gnum = goods.get("goodsNum", "")
-                    gurl = goods.get("goodsUrl", "")
-                    gname = goods.get("goodsName", "")
-                    if gname:
-                        desc = f"签到成功 +{gnum} {gname}"
-                    else:
-                        desc = f"签到成功 +{gnum} ID:{gid}"
-                    # 附加物品图片 URL，供 HTML 推送使用
-                    results.append(("库街区·鸣潮", desc, gurl))
+                    goods_list = (js.get("data") or {}).get("todayList", [])
+                    # 汇总物品描述
+                    parts = []
+                    img_url = ""
+                    for g in goods_list:
+                        gid = str(g.get("goodsId", ""))
+                        gnum = g.get("goodsNum", "")
+                        gname = goods_map.get(gid) or g.get("goodsName") or f"ID:{gid}"
+                        parts.append(f"+{gnum} {gname}")
+                        if not img_url:
+                            img_url = g.get("goodsUrl", "")
+                    desc = "签到成功 " + " ".join(parts)
+                    results.append(("库街区·鸣潮", desc, img_url))
                 else:
                     msg = js.get("msg", "失败")
                     if js.get("code") == 1511:
