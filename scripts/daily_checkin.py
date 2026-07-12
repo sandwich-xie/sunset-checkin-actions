@@ -42,7 +42,7 @@ def parse_cookie(s):
 
 GAME_MAP = {"原神":"genshin","星穹铁道":"starrail","绝区零":"zzz","崩坏3":"honkai3rd","未定事件簿":"tot"}
 
-results = []
+results = []  # 每条: (平台, 结果) 或 (平台, 结果, 图片URL)
 
 # --- 米游社 ---
 if MIYO_ENABLED and MIYO_COOKIE:
@@ -115,9 +115,16 @@ if KURO_ENABLED and KURO_TOKEN:
                     js = json.loads(resp.read())
                 if js.get("success"):
                     goods = (js.get("data") or {}).get("todayList", [{}])[0]
-                    gname = goods.get("goodsName", f"ID:{goods.get('goodsId','')}")
+                    gid = goods.get("goodsId", "")
                     gnum = goods.get("goodsNum", "")
-                    results.append(("库街区·鸣潮", f"签到成功 +{gnum}x{gname}" if gname else "签到成功"))
+                    gurl = goods.get("goodsUrl", "")
+                    gname = goods.get("goodsName", "")
+                    if gname:
+                        desc = f"签到成功 +{gnum} {gname}"
+                    else:
+                        desc = f"签到成功 +{gnum} ID:{gid}"
+                    # 附加物品图片 URL，供 HTML 推送使用
+                    results.append(("库街区·鸣潮", desc, gurl))
                 else:
                     msg = js.get("msg", "失败")
                     if js.get("code") == 1511:
@@ -131,11 +138,33 @@ else:
 
 # --- 战报 ---
 today = date.today().strftime("%Y-%m-%d")
-lines = [f"📋 **每日签到战报 · {today}**", "", "| 项目 | 结果 |", "|------|------|"]
-for n, m in results: lines.append(f"| {n} | {m} |")
-lines.append(""); lines.append("🔗 GitHub Actions 自动执行")
-content = "\n".join(lines)
 title = f"签到战报 · {today}"
+
+# Markdown 表格
+lines = [f"📋 **每日签到战报 · {today}**", "", "| 项目 | 结果 |", "|------|------|"]
+for item in results:
+    name = item[0]
+    msg = item[1]
+    lines.append(f"| {name} | {msg} |")
+lines.append("")
+
+# HTML 图片展示（仅对有图片的项）
+has_images = any(len(item) >= 3 and item[2] for item in results)
+if has_images:
+    lines.append("---")
+    lines.append("### 🎁 签到物品")
+    lines.append("")
+    for item in results:
+        if len(item) >= 3 and item[2]:
+            name = item[0]
+            msg = item[1]
+            img_url = item[2]
+            lines.append(f"**{name}**：{msg}")
+            lines.append(f"![]({img_url})")
+            lines.append("")
+
+lines.append("🔗 GitHub Actions 自动执行")
+content = "\n".join(lines)
 print(content)
 resp = push(title, content)
 print(f"[PUSH] -> {resp[:200]}")
