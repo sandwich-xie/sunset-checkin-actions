@@ -64,13 +64,22 @@ if MIYO_ENABLED and MIYO_COOKIE:
 else:
     results.append(("米游社", "未启用或缺少cookie"))
 
-# --- 库街区 ---
+# --- 库街区（鸣潮） ---
 if KURO_ENABLED and KURO_TOKEN:
     try:
-        headers = {"token": KURO_TOKEN, "osversion": "Android", "devcode": "2fba3859fe9bfe9099f2696b8648c2c6",
-                   "countrycode": "CN", "ip": "10.0.2.233", "model": "2211133C", "source": "android",
-                   "lang": "zh-Hans", "version": "1.0.9",
-                   "Content-Type": "application/x-www-form-urlencoded; charset=utf-8"}
+        # 请求头对齐库街区 v2.2.0+ API
+        headers = {
+            "token": KURO_TOKEN,
+            "source": "android",
+            "User-Agent": "Mozilla/5.0 (Linux; Android 14; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/127.0.6533.15 Mobile Safari/537.36 Kuro/2.2.0 KuroGameBox/2.2.0",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "devcode": "2fba3859fe9bfe9099f2696b8648c2c6",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Origin": "https://web-static.kurobbs.com",
+        }
+
+        # Step 1: 获取 userId
         req = urllib.request.Request("https://api.kurobbs.com/user/mineV2",
                                      data=urllib.parse.urlencode({"type":"1"}).encode(),
                                      headers=headers, method="POST")
@@ -80,30 +89,41 @@ if KURO_ENABLED and KURO_TOKEN:
         if not uid:
             results.append(("库街区", f"获取userId失败: {mine.get('msg')}"))
         else:
+            # Step 2: 获取角色列表，找鸣潮 gameId=3
             req2 = urllib.request.Request("https://api.kurobbs.com/gamer/role/default",
                                           data=urllib.parse.urlencode({"queryUserId":str(uid)}).encode(),
                                           headers=headers, method="POST")
             with urllib.request.urlopen(req2, timeout=TIMEOUT) as resp:
                 roles = json.loads(resp.read())
             rl = (roles.get("data") or {}).get("defaultRoleList") or []
-            role = next((r for r in rl if r.get("gameId")==1), rl[0] if rl else None)
+            role = next((r for r in rl if r.get("gameId") == 3), None)  # 鸣潮 gameId=3
             if not role:
-                results.append(("库街区", "无默认角色"))
+                results.append(("库街区", "未绑定鸣潮角色"))
             else:
-                # 社区签到
-                sd = urllib.parse.urlencode({"gameId":str(role.get("gameId",1)),"serverId":str(role.get("serverId","")),
-                     "roleId":str(role.get("roleId",0)),"userId":str(role.get("userId",uid)),
-                     "reqMonth":datetime.now().strftime("%m")}).encode()
-                req3 = urllib.request.Request("https://api.kurobbs.com/encourage/signIn/v2", data=sd, headers=headers, method="POST")
+                # Step 3: 鸣潮签到 V2（gameId=3, 固定 serverId）
+                MC_SERVER_ID = "76402e5b20be2c39f095a152090afddc"
+                sd = urllib.parse.urlencode({
+                    "gameId": "3",
+                    "serverId": MC_SERVER_ID,
+                    "roleId": str(role.get("roleId", 0)),
+                    "userId": str(uid),
+                    "reqMonth": datetime.now().strftime("%m"),
+                }).encode()
+                req3 = urllib.request.Request("https://api.kurobbs.com/encourage/signIn/v2",
+                                              data=sd, headers=headers, method="POST")
                 with urllib.request.urlopen(req3, timeout=TIMEOUT) as resp:
                     js = json.loads(resp.read())
-                results.append(("库街区·社区", "成功" if js.get("success") else js.get("msg","失败")))
-                # 游戏签到
-                gd = urllib.parse.urlencode({"gameId":str(role.get("gameId",1))}).encode()
-                req4 = urllib.request.Request("https://api.kurobbs.com/user/signIn", data=gd, headers=headers, method="POST")
-                with urllib.request.urlopen(req4, timeout=TIMEOUT) as resp:
-                    js2 = json.loads(resp.read())
-                results.append(("库街区·鸣潮", "成功" if js2.get("success") else js2.get("msg","失败")))
+                if js.get("success"):
+                    goods = (js.get("data") or {}).get("todayList", [{}])[0]
+                    gname = goods.get("goodsName", f"ID:{goods.get('goodsId','')}")
+                    gnum = goods.get("goodsNum", "")
+                    results.append(("库街区·鸣潮", f"签到成功 +{gnum}x{gname}" if gname else "签到成功"))
+                else:
+                    msg = js.get("msg", "失败")
+                    if js.get("code") == 1511:
+                        results.append(("库街区·鸣潮", "今日已签到"))
+                    else:
+                        results.append(("库街区·鸣潮", msg))
     except Exception as e:
         results.append(("库街区", f"ERROR: {e}"))
 else:
