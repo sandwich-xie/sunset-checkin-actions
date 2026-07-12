@@ -3,7 +3,6 @@
 import json, os, re, sys, urllib.parse, urllib.request
 from datetime import datetime, date, timezone, timedelta
 
-# --- 配置来自环境变量 ---
 CITIES = os.getenv("SUNSET_CITIES", "长沙,衡阳").split(",")
 THRESHOLD = float(os.getenv("SUNSET_THRESHOLD", "0.33"))
 MODELS = os.getenv("SUNSET_MODELS", "GFS,EC").split(",")
@@ -21,7 +20,7 @@ MODEL_SCHEDULE = {
     "EC":  ["04:00", "10:00", "16:00", "22:00"],
 }
 
-EVENT_LABELS = {"set_1": "今日日落", "set_2": "明日日落", "rise_1": "今日日出", "rise_2": "明日日出"}
+EVENT_LABELS = {"set_1": "今日日落", "set_2": "明日日落"}
 
 def parse_float(s):
     if not s: return None
@@ -49,31 +48,11 @@ def fmt_elapsed(times_str):
     mins = int((delta.total_seconds() % 3600) / 60)
     return f"{hours}h{mins}m ago" if hours >= 1 else f"{mins}m ago"
 
-def fmt_sunset_time(tb_event_time):
-    """从 tb_event_time 提取日落时间，如 '2026-07-12 19:23' → '19:23'"""
-    if not tb_event_time: return "—"
-    parts = str(tb_event_time).strip().split(" ")
-    if len(parts) >= 2:
-        return parts[-1][:5]
-    return str(tb_event_time)[:5]
-
-def query_city(city, event, model):
-    url = API_BASE.format(city=urllib.parse.quote(city), event=event, model=model)
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "sunset-monitor/3.0"})
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        if data.get("status") != "ok": return None
-        return {
-            "quality": parse_float(data.get("tb_quality")),
-            "aod": parse_float(data.get("tb_aod")),
-            "event_time": data.get("tb_event_time", ""),
-            "model_ts": data.get("display_times_str", ""),
-            "model_ts_name": data.get("display_times_name", ""),
-        }
-    except Exception as e:
-        print(f"[WARN] {city}/{model}/{event} failed: {e}", file=sys.stderr)
-        return None
+def extract_time_hhmm(s):
+    """从字符串提取 HH:MM 时间"""
+    if not s: return ""
+    m = re.search(r"(\d{1,2}:\d{2})", str(s))
+    return m.group(1) if m else ""
 
 def http_post(url, data=None, is_json=False, timeout=20):
     if is_json:
@@ -94,6 +73,29 @@ def push(title, content):
         return http_post(WECOM_WEBHOOK, {"msgtype": "markdown", "markdown": {"content": content}}, is_json=True)
     return "no push channel configured"
 
+def query_city(city, event, model):
+    url = API_BASE.format(city=urllib.parse.quote(city), event=event, model=model)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "sunset-monitor/3.0"})
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if data.get("status") != "ok": return None
+        # display_event_date_str = 日落开始时刻, tb_event_time = 日落结束时刻
+        start = extract_time_hhmm(data.get("display_event_date_str", ""))
+        end = extract_time_hhmm(data.get("tb_event_time", ""))
+        return {
+            "quality": parse_float(data.get("tb_quality")),
+            "aod": parse_float(data.get("tb_aod")),
+            "sunset_start": start,
+            "sunset_end": end,
+            "model_ts": data.get("display_times_str", ""),
+            "model_ts_name": data.get("display_times_name", ""),
+            "event_date": data.get("display_event_date_str", ""),
+        }
+    except Exception as e:
+        print(f"[WARN] {city}/{model}/{event} failed: {e}", file=sys.stderr)
+        return None
+
 def build_footer(model_ts_map):
     lines = [""]
     for m in MODELS:
@@ -112,19 +114,40 @@ def build_footer(model_ts_map):
     lines.append("🔗 https://sunsetbot.top/")
     return "\n".join(lines)
 
-def build_event_table(event, all_results):
-    """为某个 event 构建 Markdown 表格，含日落时间"""
-    lines = []
+def build_event_section(event, all_results):
+    """构建某个 event 的完整 section：日落时间段 + 数据表"""
     label = EVENT_LABELS.get(event, event)
-    lines.append(f"### 🌅 {label}")
-    lines.append("")
-    lines.append("| 城市 | 模型 | 鲜艳度 | 等级 | 气溶胶 | 日落时间 | 状态 |")
-    lines.append("|------|------|--------|------|--------|----------|------|")
+    lines = [f"### 🌅 {label}", ""]
+
+    # 提取日落时间段（同一城市不同模型时间相同，取第一个即可）
+    sunset_times = {}
+    for city in CITIES:
+        r = all_results.get(event, {}).get(city)
+        if not r: continue
+        for m in MODELS:
+            if m in r:
+                s = r[m].get("sunset_start", "")
+                e = r[m].get("sunset_end", "")
+                if s and e:
+                    sunset_times[city] = f"{s} → {e}"
+                break  # 只取第一个模型的即可
+
+    if sunset_times:
+        parts = []
+        for city in CITIES:
+            if city in sunset_times:
+                parts.append(f"**{city}** {sunset_times[city]}")
+        lines.append("🕐 " + "　|　".join(parts))
+        lines.append("")
+
+    # 数据表
+    lines.append("| 城市 | 模型 | 鲜艳度 | 等级 | 气溶胶 | 状态 |")
+    lines.append("|------|------|--------|------|--------|------|")
 
     for city in CITIES:
         r = all_results.get(event, {}).get(city)
         if not r:
-            lines.append(f"| {city} | — | — | — | — | — | 查询失败 |")
+            lines.append(f"| {city} | — | — | — | — | 查询失败 |")
             continue
         first = True
         for m in MODELS:
@@ -133,21 +156,20 @@ def build_event_table(event, all_results):
                 q_s = f"{d['quality']:.3f}" if d["quality"] is not None else "—"
                 lbl = level_label(d["quality"])
                 aod_s = f"{d['aod']:.2f}" if isinstance(d["aod"], (int, float)) else "—"
-                sunset = fmt_sunset_time(d.get("event_time", ""))
                 status = "🔥 达标" if d.get("due") else "—"
                 city_col = f"**{city}**" if first else ""
-                lines.append(f"| {city_col} | {m} | {q_s} | {lbl} | {aod_s} | {sunset} | {status} |")
+                lines.append(f"| {city_col} | {m} | {q_s} | {lbl} | {aod_s} | {status} |")
                 first = False
             else:
                 city_col = f"**{city}**" if first else ""
-                lines.append(f"| {city_col} | {m} | — | — | — | — | 查询失败 |")
+                lines.append(f"| {city_col} | {m} | — | — | — | 查询失败 |")
                 first = False
     return "\n".join(lines)
 
 def run_monitor():
     today = date.today().strftime("%Y-%m-%d")
     ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    events = ["set_1", "set_2"]  # 当日 + 次日
+    events = ["set_1", "set_2"]
     all_results = {}
     model_ts_map = {}
     any_due = False
@@ -172,11 +194,11 @@ def run_monitor():
                 all_results[ev][city][m] = {
                     "quality": rd["quality"],
                     "aod": rd["aod"],
-                    "event_time": rd["event_time"],
+                    "sunset_start": rd["sunset_start"],
+                    "sunset_end": rd["sunset_end"],
                     "due": due,
                 }
 
-    # 构建推送内容
     title = f"📡 火烧云 · {today}"
     lines = [
         f"📍 **{today} 晚霞火烧云实时查询**",
@@ -187,7 +209,7 @@ def run_monitor():
     ]
 
     for ev in events:
-        lines.append(build_event_table(ev, all_results))
+        lines.append(build_event_section(ev, all_results))
         lines.append("")
 
     lines.append(build_footer(model_ts_map))
@@ -196,17 +218,9 @@ def run_monitor():
     resp = push(title, content)
     print(f"[PUSH] {title} -> {resp[:200]}")
 
-    # 日志
     log_entry = {"ts": ts_str, "alert": any_due}
     with open(os.path.join(os.path.dirname(__file__), "sunset_monitor.log"), "a") as f:
         f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
 
-def run_force():
-    """force 模式复用 monitor"""
-    run_monitor()
-
 if __name__ == "__main__":
-    if "--force" in sys.argv:
-        run_force()
-    else:
-        run_monitor()
+    run_monitor()
