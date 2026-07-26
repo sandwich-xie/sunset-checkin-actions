@@ -15,6 +15,9 @@ TZ_CST = timezone(timedelta(hours=8))
 
 API_BASE = "https://sunsetbot.top/?intend=select_city&query_city={city}&event={event}&model={model}"
 
+# 火烧云每日推送 3 次（配合方糖免费版 5 条/天额度）
+# 签到 1 次(08:30) + 火烧云 3 次 = 4 次，留 1 次 buffer
+TRIGGER_TIMES = ["09:00", "14:00", "17:00"]  # cron-job.org 同步配置
 MODEL_SCHEDULE = {
     "GFS": ["07:30 (大更新)", "13:30 (小更新)", "19:30 (大更新)", "01:30 (小更新)"],
     "EC":  ["04:00", "10:00", "16:00", "22:00"],
