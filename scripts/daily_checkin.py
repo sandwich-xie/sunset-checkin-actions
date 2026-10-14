@@ -10,7 +10,7 @@ v2 变更（2026-10-14）：
     KURO_USER_ID / KURO_ROLE_ID 覆盖，缺省时随机生成或自动推断。
   * 新增 KURO_DRYRUN=true：只查询不签到，用于安全验证 token。
 """
-import base64, json, os, sys, urllib.parse, urllib.request, uuid
+import base64, json, os, sys, urllib.error, urllib.parse, urllib.request, uuid
 from datetime import datetime, date
 
 SERVERCHAN_SENDKEY = os.getenv("SERVERCHAN_SENDKEY", "")
@@ -36,20 +36,28 @@ KURO_UA = ("Mozilla/5.0 (Linux; Android 14; 23127PN0CC Build/UKQ1.230804.001; wv
 
 
 def http_post(url, data=None, is_json=False, timeout=20, headers=None):
+    """POST 并返回响应文本。
+
+    推送服务返回 4xx 时会抛 HTTPError，而它的响应体里通常带着有用的原因
+    （例如 Server酱 的 {"code":40001,"info":"错误的Key"}）。这里把响应体读出来
+    返回，保证调用方能看到"服务端原话"，也让脚本正常结束而不是崩掉。
+    """
     if is_json:
         body = json.dumps(data).encode()
         h = {"Content-Type": "application/json"}
-        if headers:
-            h.update(headers)
-        req = urllib.request.Request(url, data=body, headers=h, method="POST")
     else:
         body = urllib.parse.urlencode(data).encode() if data else b""
         h = {"Content-Type": "application/x-www-form-urlencoded"}
-        if headers:
-            h.update(headers)
-        req = urllib.request.Request(url, data=body, headers=h, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read().decode("utf-8", "ignore")
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, data=body, headers=h, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8", "ignore")
+    except urllib.error.HTTPError as e:
+        return "HTTP %s %s" % (e.code, e.read().decode("utf-8", "ignore")[:400])
+    except Exception as e:
+        return "%s: %s" % (type(e).__name__, e)
 
 
 def push(title, content):
@@ -223,4 +231,20 @@ lines.append("🔗 GitHub Actions 自动执行")
 content = "\n".join(lines)
 print(content)
 resp = push(title, content)
-print(f"[PUSH] -> {str(resp)[:200]}")
+print(f"[PUSH] -> {str(resp)[:300]}")
+
+# 推送失败只告警，不让整个工作流变红：签到本身已经完成，不该被通知问题拖累
+try:
+    _js = json.loads(resp)
+    _ok = (_js.get("code") == 0) or (_js.get("error") == "SUCCESS") or (_js.get("errno") == 0)
+except Exception:
+    _ok = not (str(resp).startswith("HTTP ") or str(resp).startswith("no push channel"))
+
+if not _ok:
+    print("")
+    print("[WARN] 推送失败，但签到已完成，签到结果不受影响。")
+    print("[WARN] 请检查推送凭据：")
+    print("       · Server酱   -> SERVERCHAN_SENDKEY 是否为 https://sct.ftqq.com/ 上的有效 SendKey")
+    print("       · PushPlus  -> PUSHPLUS_TOKEN")
+    print("       · 企业微信   -> WECOM_WEBHOOK")
+    print("[WARN] 服务端返回原文：" + str(resp)[:300])
