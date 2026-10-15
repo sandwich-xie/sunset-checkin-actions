@@ -163,7 +163,12 @@ if KURO_ENABLED and KURO_TOKEN:
                 raise StopIteration
             rid = str(role.get("roleId", 0))
 
+        # reqMonth 是 /encourage/signIn/v2 的**必需参数**（两位月份，如 "10"）。
+        # 缺了它服务端会返回 1501「初始化失败，未查询到活动配置」——旧脚本就漏了这个参数，
+        # 导致签到动作一直被拒（而状态查询是 200，很容易误判成"今日已签到"）。
+        req_month = date.today().strftime("%m")
         sign_data = {"gameId": "3", "serverId": MC_SERVER_ID, "roleId": rid, "userId": uid}
+        sign_action = dict(sign_data, reqMonth=req_month)
 
         # 先查状态：这一步直接反映 token 是否被接受
         info = kuro_post("/encourage/signIn/initSignInV2", sign_data)
@@ -186,7 +191,7 @@ if KURO_ENABLED and KURO_TOKEN:
             results.append(("库街区·鸣潮", f"今日已签到（累计 {d.get('sigInNum')} 天）"))
             raise StopIteration
 
-        js = kuro_post("/encourage/signIn/v2", sign_data)
+        js = kuro_post("/encourage/signIn/v2", sign_action)
         if js.get("success"):
             parts, img_url = [], ""
             for g in (js.get("data") or {}).get("todayList", []):
@@ -198,8 +203,14 @@ if KURO_ENABLED and KURO_TOKEN:
             results.append(("库街区·鸣潮", "签到成功 " + " ".join(parts), img_url))
         elif js.get("code") == 1511:
             results.append(("库街区·鸣潮", "今日已签到"))
+        elif js.get("code") == 1505:
+            results.append(("库街区·鸣潮", f"活动未开始/已过期（reqMonth={req_month}）"))
         else:
-            results.append(("库街区·鸣潮", f"签到失败: code={js.get('code')} {js.get('msg')}"))
+            # 失败时把诊断信息一并写进结果：状态查询说今天是否已签、实际签到用了什么参数，
+            # 下次再出问题就不用翻日志猜了。
+            results.append(("库街区·鸣潮",
+                            f"签到失败: code={js.get('code')} {js.get('msg')}"
+                            f"（状态查询 isSigIn={d.get('isSigIn')}，请求 reqMonth={req_month}）"))
     except StopIteration:
         pass
     except Exception as e:
